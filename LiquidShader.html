@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Chemistry Lab</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: sans-serif; }
+        canvas { display: block; }
+        #controls { position: absolute; top: 20px; left: 20px; z-index: 10; }
+        button { 
+            padding: 12px 24px; font-size: 16px; cursor: pointer; 
+            background: #00a2ff; color: white; border: none; border-radius: 5px;
+            transition: 0.3s;
+        }
+        button:hover { background: #0077be; }
+        button:disabled { background: #444; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <button id="pourBtn">Pour Liquid</button>
+</div>
+
+<script type="x-shader/x-vertex" id="vertexShader">
+    varying float vElevation;
+    uniform float uTime;
+    uniform float uFillLevel; // New: To control how high the water is
+
+    void main() {
+        vec4 modelPosition = modelMatrix * vec4(position, 1.0);
+        float wave = 0.0;
+        // Only ripple the top surface
+        if(position.y > 0.4) {
+            wave = sin(modelPosition.x * 10.0 + uTime * 2.0) * 0.03;
+        }
+        modelPosition.y += wave;
+        vElevation = wave;
+        gl_Position = projectionMatrix * viewMatrix * modelPosition;
+    }
+</script>
+
+<script type="x-shader/x-fragment" id="fragmentShader">
+    varying float vElevation;
+    uniform vec3 uColor;
+    void main() {
+        gl_FragColor = vec4(uColor + vElevation, 0.7);
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'https://esm.sh/three@0.136.0';
+    import { OrbitControls } from 'https://esm.sh/three@0.136.0/examples/jsm/controls/OrbitControls.js';
+    import gsap from 'https://esm.sh/gsap'; // Using GSAP for smooth animations
+
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 2, 5);
+    const controls = new OrbitControls(camera, renderer.domElement);
+
+    // --- MATERIALS ---
+    const glassMat = new THREE.MeshPhongMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.2,
+        shininess: 100, side: THREE.DoubleSide, depthWrite: false
+    });
+
+    const createLiquidMat = (color) => new THREE.ShaderMaterial({
+        vertexShader: document.getElementById('vertexShader').textContent,
+        fragmentShader: document.getElementById('fragmentShader').textContent,
+        transparent: true, side: THREE.DoubleSide,
+        uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(color) } }
+    });
+
+    // --- BEAKER A (The Full One) ---
+    const beakerA = new THREE.Group();
+    const bodyA = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.2, 32, 1, true), glassMat);
+    const liquidA = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 1.2, 32, 32), createLiquidMat('#00a2ff'));
+    beakerA.add(bodyA, liquidA);
+    beakerA.position.x = -1.2;
+    scene.add(beakerA);
+
+    // --- BEAKER B (The Empty One) ---
+    const beakerB = new THREE.Group();
+    const bodyB = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.2, 32, 1, true), glassMat);
+    const liquidB = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 1.2, 32, 32), createLiquidMat('#00a2ff'));
+    liquidB.scale.y = 0.01; // Start empty
+    liquidB.position.y = -0.6; 
+    beakerB.add(bodyB, liquidB);
+    beakerB.position.x = 1.2;
+    scene.add(beakerB);
+
+    // --- THE POUR STREAM ---
+    const streamGeo = new THREE.CylinderGeometry(0.03, 0.03, 1, 12);
+    const streamMat = new THREE.MeshPhongMaterial({ color: '#00a2ff', transparent: true, opacity: 0 });
+    const stream = new THREE.Mesh(streamGeo, streamMat);
+    stream.position.set(0, 0.5, 0); 
+    scene.add(stream);
+
+    // --- POURING LOGIC ---
+    document.getElementById('pourBtn').addEventListener('click', (e) => {
+        e.target.disabled = true;
+        const tl = gsap.timeline();
+
+        // 1. Tilt Beaker A
+        tl.to(beakerA.rotation, { z: -1.2, duration: 1.5, ease: "power2.inOut" });
+
+        // 2. Show Stream and Drain/Fill
+        tl.to(streamMat, { opacity: 0.7, duration: 0.2 }, "-=0.5");
+        
+        // Drain A
+        tl.to(liquidA.scale, { y: 0.01, duration: 2 }, "-=0.2");
+        tl.to(liquidA.position, { y: -0.6, x: -0.2, duration: 2 }, "<");
+
+        // Fill B
+        tl.to(liquidB.scale, { y: 1, duration: 2 }, "<");
+        tl.to(liquidB.position, { y: 0, duration: 2 }, "<");
+
+        // 3. Hide Stream and Reset Tilt
+        tl.to(streamMat, { opacity: 0, duration: 0.2 });
+        tl.to(beakerA.rotation, { z: 0, duration: 1 });
+    });
+
+    // Lights
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const pLight = new THREE.PointLight(0xffffff, 1);
+    pLight.position.set(2, 5, 5);
+    scene.add(pLight);
+
+    const clock = new THREE.Clock();
+    function animate() {
+        const t = clock.getElapsedTime();
+        liquidA.material.uniforms.uTime.value = t;
+        liquidB.material.uniforms.uTime.value = t;
+        controls.update();
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    }
+    animate();
+</script>
+</body>
+</html>
